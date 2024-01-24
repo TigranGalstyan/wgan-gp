@@ -13,10 +13,14 @@ import tflib.plot
 import numpy as np
 
 import torch
+torch.manual_seed(123)
 import torchvision
 from torch import nn
 from torch import autograd
 from torch import optim
+from torchmetrics.image.fid import FrechetInceptionDistance
+
+from pytorch_fid import fid_score, inception
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
@@ -29,13 +33,17 @@ MODE = 'wgan-gp'  # Valid options are dcgan, wgan, or wgan-gp
 DIM = 128  # This overfits substantially; you're probably better off with 64
 LAMBDA = 10  # Gradient penalty lambda hyperparameter
 CRITIC_ITERS = 5  # How many critic iterations per generator iteration
-BATCH_SIZE = 64 * 20  # Batch size
+BATCH_SIZE = 64 * 4  # Batch size
 ITERS = 800000  # How many generator iterations to train for
 OUTPUT_DIM = 3072  # Number of pixels in CIFAR10 (3*32*32)
 
-log_folder = './tmp/cifar10_riperm_0.0'
-riperm_l = 0.0
-gpu = 0
+riperm_l = 2.0
+log_folder = f'./tmp/cifar10_riperm_{riperm_l}'
+gpu = 1
+
+fid = FrechetInceptionDistance(normalize=True, reset_real_features=False, feature=2048)  # feature=2048
+fid.cuda(device=gpu)
+
 
 class Generator(nn.Module):
     def __init__(self):
@@ -188,14 +196,14 @@ def calc_gradient_penalty(netD, real_data, fake_data):
 
 
 # For generating samples
-def generate_image(frame, netG):
+def generate_image(frame, G):
     print("Generating Samples.")
-    fixed_noise_128 = torch.randn(128, 128)
+    fixed_noise_128 = torch.randn(BATCH_SIZE, 128)
     if use_cuda:
         fixed_noise_128 = fixed_noise_128.cuda(gpu)
     with torch.no_grad():
         noisev = autograd.Variable(fixed_noise_128)
-        samples = netG(noisev)
+        samples = G(noisev)
         samples = samples.view(-1, 3, 32, 32)
         samples = samples.mul(0.5).add(0.5)
         samples = samples.cpu().data.numpy()
@@ -204,21 +212,21 @@ def generate_image(frame, netG):
 
 
 # # For calculating inception score
-# def get_inception_score(G):
-#     all_samples = []
-#     for i in range(10):
-#         samples_100 = torch.randn(100, 128)
-#         if use_cuda:
-#             samples_100 = samples_100.cuda(gpu)
-#         with torch.no_grad():
-#             samples_100 = autograd.Variable(samples_100, volatile=True)
-#             all_samples.append(G(samples_100).cpu().data.numpy())
-#
-#     all_samples = np.concatenate(all_samples, axis=0)
-#     all_samples = np.multiply(np.add(np.multiply(all_samples, 0.5), 0.5), 255).astype('int32')
-#     all_samples = all_samples.reshape((-1, 3, 32, 32)).transpose(0, 2, 3, 1)
-#     return lib.inception_score.get_inception_score(list(all_samples))
-#
+def get_inception_score(G):
+    print("Calculating FID scores.")
+    fixed_noise_128 = torch.randn(128, 128)
+    if use_cuda:
+        fixed_noise_128 = fixed_noise_128.cuda(gpu)
+    with torch.no_grad():
+        noise_fid = autograd.Variable(fixed_noise_128)
+        samples = netG(noise_fid)
+
+    # all_samples = torch.concatenate(all_samples, dim=0)
+    fid.update((samples + 1) / 2, real=False)
+    score = fid.compute()
+    fid.reset()
+    return score
+
 
 # Dataset iterator
 train_gen, dev_gen = lib.cifar10.load(BATCH_SIZE, data_dir=DATA_DIR)
@@ -255,6 +263,8 @@ for iteration in range(ITERS):
         if use_cuda:
             real_data = real_data.cuda(gpu)
         real_data_v = autograd.Variable(real_data)
+
+        fid.update((real_data + 1.0) / 2.0, real=True)
 
         # import torchvision
         # filename = os.path.join("test_train_data", str(iteration) + str(i) + ".jpg")
@@ -315,13 +325,12 @@ for iteration in range(ITERS):
     lib.plot.plot(f'{log_folder}/train inverse gen cost', inv_cost.cpu().data.numpy())
     lib.plot.plot(f'{log_folder}/wasserstein distance', Wasserstein_D.cpu().data.numpy())
 
-    # # Calculate inception score every 1K iters
-    # if False and iteration % 1000 == 999:
-    #     inception_score = get_inception_score(netG)
-    #     lib.plot.plot(f'{log_folder}/inception score', inception_score[0])
-
+    # Calculate fid every 250 iters
     # Calculate dev loss and generate samples every 100 iters
-    if iteration % 100 == 99:
+    if iteration % 250 == 0:
+        current_fid = get_inception_score(netG).cpu().data
+        lib.plot.plot(f'{log_folder}/fid', current_fid)
+
         print("Calculating Dev Cost.")
         dev_disc_costs = []
         for images in dev_gen():
@@ -340,7 +349,7 @@ for iteration in range(ITERS):
 
         generate_image(iteration, netG)
 
-    # Save logs every 100 iters
-    if (iteration < 5) or (iteration % 100 == 99):
+    # Save logs every 250 iters
+    if iteration % 250 == 0:
         lib.plot.flush()
     lib.plot.tick()
