@@ -19,8 +19,8 @@ from torch import nn
 from torch import autograd
 from torch import optim
 from torchmetrics.image.fid import FrechetInceptionDistance
+from torchmetrics.image.inception import InceptionScore
 
-from pytorch_fid import fid_score, inception
 
 # Download CIFAR-10 (Python version) at
 # https://www.cs.toronto.edu/~kriz/cifar.html and fill in the path to the
@@ -37,12 +37,16 @@ BATCH_SIZE = 64 * 4  # Batch size
 ITERS = 800000  # How many generator iterations to train for
 OUTPUT_DIM = 3072  # Number of pixels in CIFAR10 (3*32*32)
 
-riperm_l = 2.0
+riperm_l = 20.0
 log_folder = f'./tmp/cifar10_riperm_{riperm_l}'
-gpu = 1
+gpu = 0
+log_freq = 250
 
-fid = FrechetInceptionDistance(normalize=True, reset_real_features=False, feature=2048)  # feature=2048
+fid = FrechetInceptionDistance(normalize=True, reset_real_features=False, feature=2048)
 fid.cuda(device=gpu)
+
+inception_metric = InceptionScore(normalize=True)
+inception_metric.cuda(device=gpu)
 
 
 class Generator(nn.Module):
@@ -212,20 +216,26 @@ def generate_image(frame, G):
 
 
 # # For calculating inception score
-def get_inception_score(G):
-    print("Calculating FID scores.")
+# def get_inception_score(G):
+
+def get_fid_and_inception_score(G):
+    print("Calculating FID and Inception scores.")
     fixed_noise_128 = torch.randn(128, 128)
     if use_cuda:
         fixed_noise_128 = fixed_noise_128.cuda(gpu)
     with torch.no_grad():
         noise_fid = autograd.Variable(fixed_noise_128)
-        samples = netG(noise_fid)
+        samples = G(noise_fid)
 
-    # all_samples = torch.concatenate(all_samples, dim=0)
-    fid.update((samples + 1) / 2, real=False)
-    score = fid.compute()
+    samples = (samples + 1) / 2
+    fid.update(samples, real=False)
+    fid_score = fid.compute()
     fid.reset()
-    return score
+
+    inception_metric.update(samples)
+    inception_score = inception_metric.compute()[0]
+
+    return fid_score, inception_score
 
 
 # Dataset iterator
@@ -319,17 +329,18 @@ for iteration in range(ITERS):
     optimizerIG.step()
 
     # Write logs and save samples
-    lib.plot.plot(f'{log_folder}/train disc cost', D_cost.cpu().data.numpy())
+    lib.plot.plot(f'{log_folder}/train_disc_cost', D_cost.cpu().data.numpy())
     lib.plot.plot(f'{log_folder}/time', time.time() - start_time)
-    lib.plot.plot(f'{log_folder}/train gen cost', G_cost.cpu().data.numpy())
-    lib.plot.plot(f'{log_folder}/train inverse gen cost', inv_cost.cpu().data.numpy())
-    lib.plot.plot(f'{log_folder}/wasserstein distance', Wasserstein_D.cpu().data.numpy())
+    lib.plot.plot(f'{log_folder}/train_gen_cost', G_cost.cpu().data.numpy())
+    lib.plot.plot(f'{log_folder}/train_inverse_gen_cost', inv_cost.cpu().data.numpy())
+    lib.plot.plot(f'{log_folder}/wasserstein_distance', Wasserstein_D.cpu().data.numpy())
 
     # Calculate fid every 250 iters
     # Calculate dev loss and generate samples every 100 iters
-    if iteration % 250 == 0:
-        current_fid = get_inception_score(netG).cpu().data
+    if iteration % log_freq == 0:
+        current_fid, current_inception = (metric.cpu().data for metric in get_fid_and_inception_score(netG))
         lib.plot.plot(f'{log_folder}/fid', current_fid)
+        lib.plot.plot(f'{log_folder}/inception_score', current_inception)
 
         print("Calculating Dev Cost.")
         dev_disc_costs = []
@@ -345,11 +356,11 @@ for iteration in range(ITERS):
             D = netD(imgs_v)
             _dev_disc_cost = -D.mean().cpu().data.numpy()
             dev_disc_costs.append(_dev_disc_cost)
-        lib.plot.plot(f'{log_folder}/dev disc cost', np.mean(dev_disc_costs))
+        lib.plot.plot(f'{log_folder}/dev_disc_cost', np.mean(dev_disc_costs))
 
         generate_image(iteration, netG)
 
     # Save logs every 250 iters
-    if iteration % 250 == 0:
-        lib.plot.flush()
+    if iteration % log_freq == 0:
+        lib.plot.flush(log_folder)
     lib.plot.tick()

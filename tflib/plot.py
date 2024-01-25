@@ -5,20 +5,25 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import collections
-import time
-import pickle as pickle
+import json
+import pickle
 
 _since_beginning = collections.defaultdict(lambda: {})
 _since_last_flush = collections.defaultdict(lambda: {})
 
 _iter = [0]
+
+
 def tick():
 	_iter[0] += 1
 
+
 def plot(name, value):
+	name = name.split('/')[-1]
 	_since_last_flush[name][_iter[0]] = value
 
-def flush():
+
+def flush(log_folder=''):
 	prints = []
 
 	for name, vals in _since_last_flush.items():
@@ -31,13 +36,15 @@ def flush():
 		plt.plot(x_vals, y_vals)
 		plt.xlabel('iteration')
 		plt.ylabel(name)
-		plt.savefig(name.replace(' ', '_')+'.jpg')
+		plt.savefig(f"{log_folder}/{name}.jpg")
 
 	print("iter {}\t{}".format(_iter[0], "\t".join(prints)))
 	_since_last_flush.clear()
 
-	with open('log.pkl', 'wb') as f:
-		pickle.dump(dict(_since_beginning), f, pickle.HIGHEST_PROTOCOL)
+	with open(f'{log_folder}/metrics.pkl', 'wb') as f:
+		pickle.dump(dict(_since_beginning), f, protocol=pickle.HIGHEST_PROTOCOL)
+		# np.save(f'{log_folder}/metrics.npz', _since_beginning)
+
 
 def reset():
 	_since_last_flush.clear()
