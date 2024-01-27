@@ -30,17 +30,19 @@ if len(DATA_DIR) == 0:
     raise Exception('Please specify path to data directory in gan_cifar.py!')
 
 MODE = 'wgan-gp'  # Valid options are dcgan, wgan, or wgan-gp
-DIM = 128  # This overfits substantially; you're probably better off with 64
+DIM = 64  # This overfits substantially; you're probably better off with 64
 LAMBDA = 10  # Gradient penalty lambda hyperparameter
 CRITIC_ITERS = 5  # How many critic iterations per generator iteration
-BATCH_SIZE = 64 * 4  # Batch size
-ITERS = 800000  # How many generator iterations to train for
+BATCH_SIZE = 256  # Batch size
+ITERS = 40000  # How many generator iterations to train for
 OUTPUT_DIM = 3072  # Number of pixels in CIFAR10 (3*32*32)
+HDIM = 32
+WDIM = 32
 
-riperm_l = 20.0
-log_folder = f'./tmp/cifar10_riperm_{riperm_l}'
-gpu = 0
-log_freq = 250
+riperm_l = 0.0
+log_folder = f'./logs/cifar10_riperm_{riperm_l}'
+gpu = 1
+log_freq = 100
 
 fid = FrechetInceptionDistance(normalize=True, reset_real_features=False, feature=2048)
 fid.cuda(device=gpu)
@@ -48,64 +50,162 @@ fid.cuda(device=gpu)
 inception_metric = InceptionScore(normalize=True)
 inception_metric.cuda(device=gpu)
 
+#
+# class Generator(nn.Module):
+#     def __init__(self):
+#         super(Generator, self).__init__()
+#         preprocess = nn.Sequential(
+#             nn.Linear(128, 4 * 4 * 4 * DIM),
+#             nn.BatchNorm1d(4 * 4 * 4 * DIM),
+#             nn.ReLU(True),
+#         )
+#
+#         block1 = nn.Sequential(
+#             nn.ConvTranspose2d(4 * DIM, 2 * DIM, 2, stride=2),
+#             nn.BatchNorm2d(2 * DIM),
+#             nn.ReLU(True),
+#         )
+#         block2 = nn.Sequential(
+#             nn.ConvTranspose2d(2 * DIM, DIM, 2, stride=2),
+#             nn.BatchNorm2d(DIM),
+#             nn.ReLU(True),
+#         )
+#         deconv_out = nn.ConvTranspose2d(DIM, 3, 2, stride=2)
+#
+#         self.preprocess = preprocess
+#         self.block1 = block1
+#         self.block2 = block2
+#         self.deconv_out = deconv_out
+#         self.tanh = nn.Tanh()
+#
+#     def forward(self, input):
+#         output = self.preprocess(input)
+#         output = output.view(-1, 4 * DIM, 4, 4)
+#         output = self.block1(output)
+#         output = self.block2(output)
+#         output = self.deconv_out(output)
+#         output = self.tanh(output)
+#         return output.view(-1, 3, 32, 32)
+#
+#
+# class Discriminator(nn.Module):
+#     def __init__(self):
+#         super(Discriminator, self).__init__()
+#         main = nn.Sequential(
+#             nn.Conv2d(3, DIM, 3, 2, padding=1),
+#             nn.LeakyReLU(),
+#             nn.Conv2d(DIM, 2 * DIM, 3, 2, padding=1),
+#             nn.LeakyReLU(),
+#             nn.Conv2d(2 * DIM, 4 * DIM, 3, 2, padding=1),
+#             nn.LeakyReLU(),
+#         )
+#
+#         self.main = main
+#         self.linear = nn.Linear(4*4*4*DIM, 1)
+#
+#     def forward(self, input):
+#         output = self.main(input)
+#         output = output.view(-1, 4*4*4*DIM)
+#         output = self.linear(output)
+#         return output
 
-class Generator(nn.Module):
-    def __init__(self):
-        super(Generator, self).__init__()
-        preprocess = nn.Sequential(
-            nn.Linear(128, 4 * 4 * 4 * DIM),
-            nn.BatchNorm1d(4 * 4 * 4 * DIM),
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_features):
+        super(ResidualBlock, self).__init__()
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(in_features, in_features, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(in_features, 0.8),
+            nn.PReLU(),
+            nn.Conv2d(in_features, in_features, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(in_features, 0.8),
+        )
+
+    def forward(self, x):
+        return x + self.conv_block(x)
+
+
+class GeneratorResNet(nn.Module):
+    def __init__(self, in_channels=3, out_channels=3, n_residual_blocks=16):
+        super(GeneratorResNet, self).__init__()
+
+        self.preprocess = nn.Sequential(
+            nn.Linear(128, 3 * 8 * 8),
             nn.ReLU(True),
         )
 
-        block1 = nn.Sequential(
-            nn.ConvTranspose2d(4 * DIM, 2 * DIM, 2, stride=2),
-            nn.BatchNorm2d(2 * DIM),
-            nn.ReLU(True),
-        )
-        block2 = nn.Sequential(
-            nn.ConvTranspose2d(2 * DIM, DIM, 2, stride=2),
-            nn.BatchNorm2d(DIM),
-            nn.ReLU(True),
-        )
-        deconv_out = nn.ConvTranspose2d(DIM, 3, 2, stride=2)
+        # First layer
+        self.conv1 = nn.Sequential(nn.Conv2d(in_channels, 64, kernel_size=9, stride=1, padding=4), nn.PReLU())
 
-        self.preprocess = preprocess
-        self.block1 = block1
-        self.block2 = block2
-        self.deconv_out = deconv_out
-        self.tanh = nn.Tanh()
+        # Residual blocks
+        res_blocks = []
+        for _ in range(n_residual_blocks):
+            res_blocks.append(ResidualBlock(64))
+        self.res_blocks = nn.Sequential(*res_blocks)
 
-    def forward(self, input):
-        output = self.preprocess(input)
-        output = output.view(-1, 4 * DIM, 4, 4)
-        output = self.block1(output)
-        output = self.block2(output)
-        output = self.deconv_out(output)
-        output = self.tanh(output)
-        return output.view(-1, 3, 32, 32)
+        # Second conv layer post residual blocks
+        self.conv2 = nn.Sequential(nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1), nn.BatchNorm2d(64, 0.8))
+
+        # Upsampling layers
+        upsampling = []
+        for out_features in range(2):
+            upsampling += [
+                # nn.Upsample(scale_factor=2),
+                nn.Conv2d(64, 256, 3, 1, 1),
+                nn.BatchNorm2d(256),
+                nn.PixelShuffle(upscale_factor=2),
+                nn.PReLU(),
+            ]
+        self.upsampling = nn.Sequential(*upsampling)
+
+        # Final output layer
+        self.conv3 = nn.Sequential(nn.Conv2d(64, out_channels, kernel_size=9, stride=1, padding=4), nn.Tanh())
+
+    def forward(self, x):
+        img = self.preprocess(x).view(-1, 3, 8, 8)
+        out1 = self.conv1(img)
+        out = self.res_blocks(out1)
+        out2 = self.conv2(out)
+        out = torch.add(out1, out2)
+        out = self.upsampling(out)
+        out = self.conv3(out)
+        return out
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, input_shape):
         super(Discriminator, self).__init__()
-        main = nn.Sequential(
-            nn.Conv2d(3, DIM, 3, 2, padding=1),
-            nn.LeakyReLU(),
-            nn.Conv2d(DIM, 2 * DIM, 3, 2, padding=1),
-            nn.LeakyReLU(),
-            nn.Conv2d(2 * DIM, 4 * DIM, 3, 2, padding=1),
-            nn.LeakyReLU(),
-        )
 
-        self.main = main
-        self.linear = nn.Linear(4*4*4*DIM, 1)
+        self.input_shape = input_shape
+        in_channels, in_height, in_width = self.input_shape
+        patch_h, patch_w = int(in_height / 2 ** 4), int(in_width / 2 ** 4)
+        self.output_shape = (1, patch_h, patch_w)
 
-    def forward(self, input):
-        output = self.main(input)
-        output = output.view(-1, 4*4*4*DIM)
-        output = self.linear(output)
-        return output
+        def discriminator_block(in_filters, out_filters, first_block=False):
+            layers = []
+            layers.append(nn.Conv2d(in_filters, out_filters, kernel_size=3, stride=1, padding=1))
+            if not first_block:
+                layers.append(nn.BatchNorm2d(out_filters))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            layers.append(nn.Conv2d(out_filters, out_filters, kernel_size=3, stride=2, padding=1))
+            layers.append(nn.BatchNorm2d(out_filters))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        layers = []
+        in_filters = in_channels
+        for i, out_filters in enumerate([32, 64, 128, 256, 512]):
+            layers.extend(discriminator_block(in_filters, out_filters, first_block=(i == 0)))
+            in_filters = out_filters
+
+        layers.append(nn.Conv2d(out_filters, 1, kernel_size=3, stride=1, padding=1))
+
+        self.model = nn.Sequential(*layers)
+        self.layers = layers
+
+    def forward(self, img):
+        validity = self.model(img).view(img.shape[0], -1)
+        return validity
 
 
 class InverseGenerator(nn.Module):
@@ -151,8 +251,8 @@ def GeneratorInverseLoss(orig_latent, pred_latent):
     return nn.functional.mse_loss(orig_latent, pred_latent)
 
 
-netG = Generator()
-netD = Discriminator()
+netG = GeneratorResNet()  #Generator()
+netD = Discriminator(input_shape=(3, HDIM, WDIM))
 netIG = InverseGenerator()
 print(netG)
 print(netIG)
