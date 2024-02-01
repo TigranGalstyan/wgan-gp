@@ -30,8 +30,8 @@ if len(DATA_DIR) == 0:
     raise Exception('Please specify path to data directory in gan_cifar.py!')
 
 MODE = 'wgan-gp'  # Valid options are dcgan, wgan, or wgan-gp
-DIM = 64  # This overfits substantially; you're probably better off with 64
-LAMBDA = 10  # Gradient penalty lambda hyperparameter
+DIM = 128  # This overfits substantially; you're probably better off with 64
+LAMBDA = 1  # Gradient penalty lambda hyperparameter
 CRITIC_ITERS = 5  # How many critic iterations per generator iteration
 BATCH_SIZE = 256  # Batch size
 ITERS = 40000  # How many generator iterations to train for
@@ -39,8 +39,8 @@ OUTPUT_DIM = 3072  # Number of pixels in CIFAR10 (3*32*32)
 HDIM = 32
 WDIM = 32
 
-riperm_l = 0.0
-log_folder = f'./logs/cifar10_riperm_{riperm_l}'
+riperm_l = 1.0
+log_folder = f'/mnt/2tb/tigrann/cifar_logs/zero_grad/cifarl1_riperm_{riperm_l}'
 gpu = 1
 log_freq = 100
 
@@ -86,28 +86,28 @@ inception_metric.cuda(device=gpu)
 #         output = self.deconv_out(output)
 #         output = self.tanh(output)
 #         return output.view(-1, 3, 32, 32)
-#
-#
-# class Discriminator(nn.Module):
-#     def __init__(self):
-#         super(Discriminator, self).__init__()
-#         main = nn.Sequential(
-#             nn.Conv2d(3, DIM, 3, 2, padding=1),
-#             nn.LeakyReLU(),
-#             nn.Conv2d(DIM, 2 * DIM, 3, 2, padding=1),
-#             nn.LeakyReLU(),
-#             nn.Conv2d(2 * DIM, 4 * DIM, 3, 2, padding=1),
-#             nn.LeakyReLU(),
-#         )
-#
-#         self.main = main
-#         self.linear = nn.Linear(4*4*4*DIM, 1)
-#
-#     def forward(self, input):
-#         output = self.main(input)
-#         output = output.view(-1, 4*4*4*DIM)
-#         output = self.linear(output)
-#         return output
+
+
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        main = nn.Sequential(
+            nn.Conv2d(3, DIM, 3, 2, padding=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(DIM, 2 * DIM, 3, 2, padding=1),
+            nn.LeakyReLU(),
+            nn.Conv2d(2 * DIM, 4 * DIM, 3, 2, padding=1),
+            nn.LeakyReLU(),
+        )
+
+        self.main = main
+        self.linear = nn.Linear(4*4*4*DIM, 1)
+
+    def forward(self, input):
+        output = self.main(input)
+        output = output.view(-1, 4*4*4*DIM)
+        output = self.linear(output)
+        return output
 
 
 class ResidualBlock(nn.Module):
@@ -172,40 +172,43 @@ class GeneratorResNet(nn.Module):
         return out
 
 
-class Discriminator(nn.Module):
-    def __init__(self, input_shape):
-        super(Discriminator, self).__init__()
-
-        self.input_shape = input_shape
-        in_channels, in_height, in_width = self.input_shape
-        patch_h, patch_w = int(in_height / 2 ** 4), int(in_width / 2 ** 4)
-        self.output_shape = (1, patch_h, patch_w)
-
-        def discriminator_block(in_filters, out_filters, first_block=False):
-            layers = []
-            layers.append(nn.Conv2d(in_filters, out_filters, kernel_size=3, stride=1, padding=1))
-            if not first_block:
-                layers.append(nn.BatchNorm2d(out_filters))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            layers.append(nn.Conv2d(out_filters, out_filters, kernel_size=3, stride=2, padding=1))
-            layers.append(nn.BatchNorm2d(out_filters))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
-
-        layers = []
-        in_filters = in_channels
-        for i, out_filters in enumerate([32, 64, 128, 256, 512]):
-            layers.extend(discriminator_block(in_filters, out_filters, first_block=(i == 0)))
-            in_filters = out_filters
-
-        layers.append(nn.Conv2d(out_filters, 1, kernel_size=3, stride=1, padding=1))
-
-        self.model = nn.Sequential(*layers)
-        self.layers = layers
-
-    def forward(self, img):
-        validity = self.model(img).view(img.shape[0], -1)
-        return validity
+# class Discriminator(nn.Module):
+#     def __init__(self, input_shape):
+#         super(Discriminator, self).__init__()
+#
+#         self.input_shape = input_shape
+#         in_channels, in_height, in_width = self.input_shape
+#
+#         def discriminator_block(in_filters, out_filters, first_block=False):
+#             layers = []
+#             layers.append(nn.Conv2d(in_filters, out_filters, kernel_size=3, stride=2, padding=1))
+#             if not first_block:
+#                 layers.append(nn.BatchNorm2d(out_filters))
+#             # layers.append(nn.LeakyReLU(0.2, inplace=True))
+#             # layers.append(nn.Conv2d(out_filters, out_filters, kernel_size=3, stride=2, padding=1))
+#             # layers.append(nn.BatchNorm2d(out_filters))
+#             layers.append(nn.LeakyReLU(0.2, inplace=True))
+#             return layers
+#
+#         layers = []
+#         in_filters = in_channels
+#         for i, out_filters in enumerate([32, 64, 128, 256]):
+#             layers.extend(discriminator_block(in_filters, out_filters, first_block=(i == 0)))
+#             in_filters = out_filters
+#
+#         # layers.append(nn.Conv2d(out_filters, 1, kernel_size=3, stride=1, padding=1))
+#
+#         layers.append(nn.Flatten())
+#         layers.append(nn.Linear(1024, 1))
+#
+#         self.model = nn.Sequential(*layers)
+#         # self.layers = layers
+#
+#     def forward(self, img):
+#         # for l in self.layers:
+#         #     img = l(img)
+#         validity = self.model(img).view(img.shape[0], -1)
+#         return validity
 
 
 class InverseGenerator(nn.Module):
@@ -251,8 +254,8 @@ def GeneratorInverseLoss(orig_latent, pred_latent):
     return nn.functional.mse_loss(orig_latent, pred_latent)
 
 
-netG = GeneratorResNet()  #Generator()
-netD = Discriminator(input_shape=(3, HDIM, WDIM))
+netG = GeneratorResNet()  # Generator()
+netD = Discriminator()  #(input_shape=(3, HDIM, WDIM))
 netIG = InverseGenerator()
 print(netG)
 print(netIG)
@@ -270,9 +273,9 @@ if use_cuda:
     one = one.cuda(gpu)
     mone = mone.cuda(gpu)
 
-optimizerD = optim.Adam(netD.parameters(), lr=1e-4, betas=(0.5, 0.9))
-optimizerG = optim.Adam(netG.parameters(), lr=1e-4, betas=(0.5, 0.9))
-optimizerIG = optim.Adam(netIG.parameters(), lr=1e-4, betas=(0.5, 0.9))
+optimizerD = optim.Adam(netD.parameters(), lr=1e-4, betas=(0.5, 0.99))
+optimizerG = optim.Adam(netG.parameters(), lr=1e-4, betas=(0.5, 0.99))
+optimizerIG = optim.Adam(netIG.parameters(), lr=1e-4, betas=(0.5, 0.99))
 
 
 def calc_gradient_penalty(netD, real_data, fake_data):
@@ -308,7 +311,7 @@ def generate_image(frame, G):
     with torch.no_grad():
         noisev = autograd.Variable(fixed_noise_128)
         samples = G(noisev)
-        samples = samples.view(-1, 3, 32, 32)
+        # samples = samples.view(-1, 3, 32, 32)
         samples = samples.mul(0.5).add(0.5)
         samples = samples.cpu().data.numpy()
 
@@ -354,6 +357,7 @@ preprocess = torchvision.transforms.Compose([
                                torchvision.transforms.ToTensor(),
                                torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ])
+print(f"Logging to {log_folder}")
 
 for iteration in range(ITERS):
     start_time = time.time()
@@ -410,7 +414,8 @@ for iteration in range(ITERS):
     ###########################
     for p in netD.parameters():
         p.requires_grad = False  # to avoid computation
-    netG.zero_grad()
+    optimizerG.zero_grad()
+    optimizerIG.zero_grad()
 
     noise = torch.randn(BATCH_SIZE, 128)
     if use_cuda:
